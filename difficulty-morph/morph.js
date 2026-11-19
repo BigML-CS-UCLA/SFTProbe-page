@@ -332,61 +332,83 @@
     ];
   }
 
+  const tickUnit = 10 ** Math.floor(Math.log10((Z_TOP - FLOOR) / 5));
+  const tickStep = [1, 2, 5, 10].find((n) => n * tickUnit >= (Z_TOP - FLOOR) / 5) * tickUnit;
+  const LOSS_TICKS = [];
+  for (let z = Math.ceil(FLOOR / tickStep) * tickStep; z <= Z_TOP; z += tickStep) LOSS_TICKS.push(z);
+
+  const ANN_EPS = 1e-5;
+  const ANN_X = [X_RANGE[0] + ANN_EPS, X_RANGE[1] - ANN_EPS];
+  const ANN_Y = [D.xy_range[2] + ANN_EPS, D.xy_range[3] - ANN_EPS];
+  const ANN_FLOOR = FLOOR + 1e-4;
+
+  function pose3(eye, center, up) {
+    const vx = eye.x - center.x, vy = eye.y - center.y, vz = eye.z - center.z;
+    const r = Math.hypot(vx, vy, vz) || 1;
+    const el = (Math.asin(clamp(vz / r, -1, 1)) * 180) / Math.PI;
+    const xy = Math.hypot(vx, vy);
+    const az = xy > 0 ? (Math.atan2(vy, vx) * 180) / Math.PI : -90;
+    const dAz90 = Math.abs(((((az + 90) % 360) + 540) % 360) - 180);
+    const azMix = clamp((20 - dAz90) / 10, 0, 1);
+    const sideMix = q(clamp((20 - Math.abs(el)) / 10, 0, 1) * azMix);
+    const elTopMix = q(clamp((el - 60) / 15, 0, 1));
+    const topMix = q(elTopMix * azMix);
+    const xTitleMix = Math.max(sideMix, topMix);
+    const lossX = eye.y >= center.y ? ANN_X[1] : ANN_X[0];
+    const lossY = lerp(eye.x >= center.x ? ANN_Y[0] : ANN_Y[1], 0, sideMix);
+    return { sideMix, elTopMix, topMix, xTitleMix, lossX, lossY };
+  }
+
   function layout3(p, view) {
+    const narrow = gd.clientWidth < 600;
+    const shortTitle = (t) => (narrow ? t.replace(" scale", "") : t);
+    const titleSize = narrow ? 11 : 13;
     const axis = (title, range, opacity, titleOpacity = opacity) => ({
-      title: { text: gd.clientWidth < 600 ? title.replace(" scale", "") : title,
-        font: { size: gd.clientWidth < 600 ? 11 : 13, color: `rgba(70,81,101,${titleOpacity})` } },
+      title: { text: shortTitle(title),
+        font: { size: titleSize, color: `rgba(70,81,101,${titleOpacity})` } },
       range, showticklabels: true, showgrid: true, gridcolor: `rgba(180,180,180,${0.45 * opacity})`,
       zeroline: false, showbackground: false, showspikes: false,
       tickfont: { size: 11, color: `rgba(70,81,101,${opacity})` },
     });
-    const sideMix = clamp((20 - view.el) / 10, 0, 1);
-    const topMix = clamp((view.el - 60) / 15, 0, 1);
+    const { sideMix, elTopMix, topMix, xTitleMix, lossX, lossY } = pose3(view.camera.eye, view.camera.center, view.camera.up);
     // Use screen-aligned annotations for the loss axis in every 3D pose.
     // Its title stays vertical and its ticks stay horizontal, matching 2D.
     // Pick the leftmost corner of the box; the side view uses the slice plane.
-    const eye = view.camera.eye, center = view.camera.center;
-    const lossX = eye.y >= center.y ? X_RANGE[1] : X_RANGE[0];
-    const lossY = lerp(eye.x >= center.x ? D.xy_range[2] : D.xy_range[3], 0, sideMix);
-    const xTitleMix = Math.max(sideMix, topMix);
-    const tickUnit = 10 ** Math.floor(Math.log10((Z_TOP - FLOOR) / 5));
-    const tickStep = [1, 2, 5, 10].find(n => n * tickUnit >= (Z_TOP - FLOOR) / 5) * tickUnit;
-    const lossTicks = [];
-    for (let z = Math.ceil(FLOOR / tickStep) * tickStep; z <= Z_TOP; z += tickStep) lossTicks.push(z);
-    const lossAnnotations = lossTicks.map(z => ({
+    const lossAnnotations = LOSS_TICKS.map(z => ({
       x: lossX, y: lossY, z, text: String(z), showarrow: false,
-      xanchor: "right", xshift: -8, opacity: 1 - topMix, font: { size: 11 },
+      xanchor: "right", xshift: -8, opacity: 1 - elTopMix, font: { size: 11 },
     }));
     lossAnnotations.push({
       x: lossX, y: lossY, z: (FLOOR + Z_TOP) / 2,
       text: "Loss", showarrow: false, textangle: -90,
-      xshift: -48, opacity: 1 - topMix, font: { size: 13 },
+      xshift: -48, opacity: 1 - elTopMix, font: { size: 13 },
     });
     lossAnnotations.push({
-      x: X_RANGE[0], y: 0, z: (FLOOR + Z_TOP) / 2,
-      text: "Direction 2 scale", showarrow: false, textangle: -90,
-      xshift: -48, opacity: topMix, font: { size: 13 },
+      x: ANN_X[0], y: 0, z: ANN_FLOOR,
+      text: shortTitle("Direction 2 scale"), showarrow: false, textangle: -90,
+      xshift: -48, opacity: topMix, font: { size: titleSize },
+    });
+    lossAnnotations.push({
+      x: 0, y: lerp(ANN_Y[0], 0, sideMix), z: ANN_FLOOR,
+      text: shortTitle("Direction 1 scale"), showarrow: false,
+      yshift: -44, opacity: xTitleMix, font: { size: titleSize },
     });
     return {
       font: { family: PLOT_FONT, size: 13, color: "#465165" },
       paper_bgcolor: "#fff",
       margin: { l: 45, r: 90, t: 8, b: 70 },
       showlegend: false,
-      annotations: [
-        { xref: "paper", yref: "paper", x: 0.5, y: -0.08,
-          text: "Direction 1 scale", showarrow: false, yanchor: "top", opacity: xTitleMix, font: { size: 13 } },
-      ],
       scene: {
         camera: view.camera,
         dragmode: "turntable",
         aspectmode: "manual",
         aspectratio: view.aspect,
         xaxis: { ...axis(xTitleMix < 0.999 ? "Direction 1 scale" : "", X_RANGE, 1, 1 - xTitleMix), tickvals: D.ticks },
-        yaxis: { ...axis(topMix < 0.999 ? "Direction 2 scale" : "", [D.xy_range[2], D.xy_range[3]], 1 - sideMix, (1 - sideMix) * (1 - topMix)), tickvals: D.ticks },
+        yaxis: { ...axis(topMix < 0.999 && (1 - sideMix) * (1 - topMix) > 0.001 ? "Direction 2 scale" : "", [D.xy_range[2], D.xy_range[3]], 1 - sideMix, (1 - sideMix) * (1 - topMix)), tickvals: D.ticks },
         zaxis: {
-          ...axis("", [FLOOR, Z_TOP], 1 - topMix),
-          tickvals: lossTicks, tickmode: "array", showticklabels: false,
-          ticktext: lossTicks.map(() => ""),
+          ...axis("", [FLOOR, Z_TOP], 1 - elTopMix),
+          tickvals: LOSS_TICKS, tickmode: "array", showticklabels: false,
+          ticktext: LOSS_TICKS.map(() => ""),
         },
         annotations: lossAnnotations,
       },
@@ -587,7 +609,76 @@
   }
   const liveCamera = () => readScene() || lastCam;
 
+  let lastPoseKey = null;
+  function syncScenePose(scene) {
+    if (!scene || !scene.camera || !scene.fullSceneLayout) return;
+    const c = scene.getCamera();
+    const pose = pose3(c.eye, c.center, c.up);
+    const narrow = gd.clientWidth < 600;
+    const key = `${pose.sideMix}|${pose.elTopMix}|${pose.topMix}|${pose.lossX}|${pose.lossY}|${narrow ? 1 : 0}`;
+    if (key === lastPoseKey) return;
+    lastPoseKey = key;
+    const fsl = scene.fullSceneLayout;
+    const shortTitle = (t) => (narrow ? t.replace(" scale", "") : t);
+    const yOp = r4(1 - pose.sideMix);
+    const yTitleOp = r4((1 - pose.sideMix) * (1 - pose.topMix));
+    const xTitleOp = r4(1 - pose.xTitleMix);
+    const zOp = r4(1 - pose.elTopMix);
+    if (fsl.xaxis && fsl.xaxis.title) {
+      fsl.xaxis.title.text = pose.xTitleMix < 0.999 ? shortTitle("Direction 1 scale") : "";
+      fsl.xaxis.title.font.color = `rgba(70,81,101,${xTitleOp})`;
+    }
+    if (fsl.yaxis && fsl.yaxis.title) {
+      fsl.yaxis.title.text = pose.topMix < 0.999 && yTitleOp > 0.001 ? shortTitle("Direction 2 scale") : "";
+      if (fsl.yaxis.title.font) fsl.yaxis.title.font.color = `rgba(70,81,101,${yTitleOp})`;
+      fsl.yaxis.gridcolor = `rgba(180,180,180,${r4(0.45 * yOp)})`;
+      if (fsl.yaxis.tickfont) fsl.yaxis.tickfont.color = `rgba(70,81,101,${yOp})`;
+    }
+    if (fsl.zaxis) {
+      fsl.zaxis.gridcolor = `rgba(180,180,180,${r4(0.45 * zOp)})`;
+      if (fsl.zaxis.tickfont) fsl.zaxis.tickfont.color = `rgba(70,81,101,${zOp})`;
+    }
+    if (scene.axesOptions && scene.fullLayout) {
+      scene.axesOptions.merge(scene.fullLayout, fsl);
+    }
+    const anns = fsl.annotations;
+    if (anns && anns.length === LOSS_TICKS.length + 3) {
+      for (let i = 0; i < LOSS_TICKS.length; i++) {
+        anns[i].x = pose.lossX;
+        anns[i].y = pose.lossY;
+        anns[i].opacity = zOp;
+        anns[i].visible = zOp > 0.001;
+      }
+      const lossTitle = anns[LOSS_TICKS.length];
+      lossTitle.x = pose.lossX;
+      lossTitle.y = pose.lossY;
+      lossTitle.opacity = zOp;
+      lossTitle.visible = zOp > 0.001;
+      const dir2Title = anns[LOSS_TICKS.length + 1];
+      dir2Title.text = shortTitle("Direction 2 scale");
+      dir2Title.opacity = pose.topMix;
+      dir2Title.visible = pose.topMix > 0.001;
+      const dir1Title = anns[LOSS_TICKS.length + 2];
+      dir1Title.y = lerp(ANN_Y[0], 0, pose.sideMix);
+      dir1Title.text = shortTitle("Direction 1 scale");
+      dir1Title.opacity = pose.xTitleMix;
+      dir1Title.visible = pose.xTitleMix > 0.001;
+    }
+  }
+
+  function hookScene() {
+    const scene = sceneObj();
+    if (!scene || !scene.glplot || scene.glplot._poseHooked) return;
+    scene.glplot._poseHooked = true;
+    const origRender = scene.glplot.onrender;
+    scene.glplot.onrender = function () {
+      syncScenePose(scene);
+      if (origRender) origRender.call(this);
+    };
+  }
+
   function trackCamera(ev) {
+    if (ev) lastKey3 = null;
     const live = readScene();
     if (live) { lastCam = live; return; }
     if (!ev) return;
@@ -610,7 +701,7 @@
     const r = norm3(v);
     if (!(r > 1e-9)) return fallback;
     const el = clamp((Math.asin(clamp(v[2] / r, -1, 1)) * 180) / Math.PI, -89.9, 89.9);
-    const az = Math.hypot(v[0], v[1]) > 1e-9 ? (Math.atan2(v[1], v[0]) * 180) / Math.PI : params.az;
+    const az = Math.hypot(v[0], v[1]) > 0 ? (Math.atan2(v[1], v[0]) * 180) / Math.PI : params.az;
     const k = live.aspect && live.aspect.x > 0 ? live.aspect.x : 1;
     const zasp = live.aspect && live.aspect.z > 0 ? live.aspect.z / k : params.zasp;
     const up = norm3(live.up) > 1e-9 ? live.up.slice() : Z_UP;
@@ -761,7 +852,8 @@
     const key3 = Q3_KEYS.map((k) => qp[k]).join(",") + "|" + JSON.stringify([view.camera, view.aspect]);
     if (key3 !== lastKey3) {
       lastKey3 = key3;
-      jobs.push(Plotly.react(gd, traces3(qp), layout3(qp, view), CONFIG3));
+      lastPoseKey = null;
+      jobs.push(Plotly.react(gd, traces3(qp), layout3(qp, view), CONFIG3).then(hookScene));
     }
     if (p.ov > 0.001 || lastKey2 === null) {
       const k = off2 ? 1 - e2 : 0;
